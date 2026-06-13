@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -21,6 +22,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +72,7 @@ type provResult struct {
 }
 
 func main() {
-	opt := parseFlags()
+	opt := loadConfig()
 
 	fmt.Println(strings.Repeat("=", 72))
 	fmt.Println(" dht-scan — TON DHT/ADNL readiness probe")
@@ -168,22 +170,101 @@ func main() {
 	printSummaryAndVerdict(results, opt)
 }
 
-func parseFlags() options {
+// loadConfig resolves settings with priority: CLI flag > env var > .env file > default.
+// Env is the primary knob (Docker-friendly); flags stay as optional overrides.
+func loadConfig() options {
+	loadDotEnv(".env")
+
 	var opt options
-	flag.StringVar(&opt.host, "host", "https://mytonprovider.org", "coordinator host for /api/v1/providers/search")
-	flag.IntVar(&opt.limit, "limit", 20, "number of providers to fetch/probe")
-	flag.Float64Var(&opt.uptime, "uptime", 50, "uptime_gt_percent filter for provider search")
-	flag.StringVar(&opt.pubkeysCSV, "pubkeys", "", "comma-separated hex provider pubkeys (overrides API)")
-	flag.StringVar(&opt.configURL, "config", "https://ton-blockchain.github.io/global.config.json", "TON global config URL")
-	flag.StringVar(&opt.port, "port", "16167", "local UDP port for ADNL/DHT (0 = random)")
-	flag.IntVar(&opt.concurrency, "concurrency", 8, "parallel provider probes")
-	flag.DurationVar(&opt.timeout, "timeout", 10*time.Second, "per-provider timeout")
-	flag.BoolVar(&opt.doRLDP, "rldp", true, "also run RLDP GetStorageRates after DHT resolve")
+	flag.StringVar(&opt.host, "host", getenvStr("DHTSCAN_HOST", "https://mytonprovider.org"), "coordinator host for /api/v1/providers/search (env DHTSCAN_HOST)")
+	flag.IntVar(&opt.limit, "limit", getenvInt("DHTSCAN_LIMIT", 20), "number of providers to fetch/probe (env DHTSCAN_LIMIT)")
+	flag.Float64Var(&opt.uptime, "uptime", getenvFloat("DHTSCAN_UPTIME", 50), "uptime_gt_percent filter (env DHTSCAN_UPTIME)")
+	flag.StringVar(&opt.pubkeysCSV, "pubkeys", getenvStr("DHTSCAN_PUBKEYS", ""), "comma-separated hex provider pubkeys, overrides API (env DHTSCAN_PUBKEYS)")
+	flag.StringVar(&opt.configURL, "config", getenvStr("DHTSCAN_TON_CONFIG", "https://ton-blockchain.github.io/global.config.json"), "TON global config URL (env DHTSCAN_TON_CONFIG)")
+	flag.StringVar(&opt.port, "port", getenvStr("DHTSCAN_UDP_PORT", "16167"), "local UDP port for ADNL/DHT, 0=random (env DHTSCAN_UDP_PORT)")
+	flag.IntVar(&opt.concurrency, "concurrency", getenvInt("DHTSCAN_CONCURRENCY", 8), "parallel provider probes (env DHTSCAN_CONCURRENCY)")
+	flag.DurationVar(&opt.timeout, "timeout", getenvDuration("DHTSCAN_TIMEOUT", 10*time.Second), "per-provider timeout (env DHTSCAN_TIMEOUT)")
+	flag.BoolVar(&opt.doRLDP, "rldp", getenvBool("DHTSCAN_RLDP", true), "also run RLDP GetStorageRates after DHT resolve (env DHTSCAN_RLDP)")
 	flag.Parse()
 	if opt.concurrency < 1 {
 		opt.concurrency = 1
 	}
 	return opt
+}
+
+// loadDotEnv loads KEY=VALUE pairs from a .env file into the process environment.
+// Real environment variables always win (existing keys are not overwritten),
+// matching the usual godotenv behaviour. A missing file is not an error.
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		eq := strings.IndexByte(line, '=')
+		if eq < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:eq])
+		val := strings.Trim(strings.TrimSpace(line[eq+1:]), `"'`)
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); !exists {
+			_ = os.Setenv(key, val)
+		}
+	}
+}
+
+func getenvStr(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != "" {
+		return v
+	}
+	return def
+}
+
+func getenvInt(key string, def int) int {
+	if v, ok := os.LookupEnv(key); ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func getenvFloat(key string, def float64) float64 {
+	if v, ok := os.LookupEnv(key); ok {
+		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func getenvBool(key string, def bool) bool {
+	if v, ok := os.LookupEnv(key); ok {
+		if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
+			return b
+		}
+	}
+	return def
+}
+
+func getenvDuration(key string, def time.Duration) time.Duration {
+	if v, ok := os.LookupEnv(key); ok {
+		if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil {
+			return d
+		}
+	}
+	return def
 }
 
 func printEnv(opt options) {

@@ -1,5 +1,7 @@
 # dht-scan
 
+*[Русская версия — README.ru.md](README.ru.md)*
+
 A tiny, self-contained probe that tells you whether a host (any VPS) can talk to
 TON storage providers over **DHT + ADNL/RLDP** — i.e. whether
 `mytonstorage-backend`'s `RequestStorageInfo` notify path would work from here.
@@ -13,28 +15,44 @@ It replicates `tonutils-storage-provider/pkg/transport.Client.connect` exactly:
 Provider pubkeys are pulled from the public coordinator API
 (`POST https://mytonprovider.org/api/v1/providers/search`) — no DB or auth needed.
 
-## Build
+## Build & run (on the VPS)
 
 ```bash
+git clone <repo> && cd dht-scan
+cp .env.example .env        # then edit .env
 go build -o dhtscan .
-
-# static build for shipping to a VPS:
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dhtscan .
+./dhtscan
 ```
 
-Then `scp dhtscan` (and the `scripts/` folder) to the target host and run it there.
+## Configuration (env / .env)
 
-## Run
+Config is env-first (Docker-friendly). Priority: **CLI flag > env var > `.env` file > default**.
+Copy `.env.example` to `.env` and edit. Real environment variables override the
+`.env` file.
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `DHTSCAN_HOST` | `https://mytonprovider.org` | coordinator/API host for `/api/v1/providers/search` |
+| `DHTSCAN_LIMIT` | `20` | number of providers to fetch/probe |
+| `DHTSCAN_UPTIME` | `50` | `uptime_gt_percent` filter |
+| `DHTSCAN_PUBKEYS` | _(empty)_ | comma-separated hex pubkeys; overrides the API |
+| `DHTSCAN_TON_CONFIG` | TON global config URL | network must match your providers |
+| `DHTSCAN_UDP_PORT` | `16167` | local UDP port (`0` = random; use it if the port is taken) |
+| `DHTSCAN_CONCURRENCY` | `8` | parallel probes |
+| `DHTSCAN_TIMEOUT` | `10s` | per-provider timeout |
+| `DHTSCAN_RLDP` | `true` | run RLDP `GetStorageRates` after DHT resolve |
 
 ```bash
-./dhtscan                      # 20 top-rated providers, default UDP 16167
-./dhtscan --limit 30           # probe more providers
-./dhtscan --port 0             # random local UDP port
-./dhtscan --rldp=false         # DHT resolve only, skip RLDP layer
-./dhtscan --pubkeys aabb..,ccdd..   # probe specific pubkeys, skip the API
+# point at a test coordinator while prod is down:
+echo 'DHTSCAN_HOST=http://my-test-box:8080' >> .env && ./dhtscan
+
+# one-off override via real env or flags:
+DHTSCAN_LIMIT=30 ./dhtscan
+./dhtscan --port 0 --rldp=false
 ```
 
-Flags: `--host --limit --uptime --pubkeys --config --port --concurrency --timeout --rldp`.
+Every env var has a matching flag (`--host --limit --uptime --pubkeys --config
+--port --concurrency --timeout --rldp`) that wins if passed.
 
 ## Output
 
